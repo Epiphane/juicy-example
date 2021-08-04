@@ -34,11 +34,7 @@ function serveStatResult(res, path, err) {
   }
 }
 
-const wss = new WebSocket.Server({
-  port: 8081,
-});
-
-http
+const server = http
   .createServer(function (req, res) {
     if (req.url === "/time") {
       res.write(JSON.stringify({ start }));
@@ -55,5 +51,10 @@ http
         serveStatResult(res, path, err);
       }
     });
-  })
-  .listen(8080);
+  });
+
+  const wss = new WebSocket.Server({
+    server
+  });
+
+  server.listen(8080);

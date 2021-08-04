@@ -1,7 +1,5 @@
-import { Game } from '../lib/juicy';
-import GameScreen from './states/game_screen';
+import { Game, THREE } from '../lib/juicy';
 import Keys from './helpers/keys';
-import * as THREE from '../lib/three.js';
 import LoadingScreen from './states/load_screen';
 
 const GAME_WIDTH = 1280;

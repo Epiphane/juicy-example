@@ -1,17 +1,14 @@
-import { OBJLoader } from '../../lib/objloader';
-import { MTLLoader } from '../../lib/mtlloader';
-import { MtlObjBridge } from '../../lib/loaders/obj2/bridge/MtlObjBridge';
 import {
     THREE,
     State,
 } from '../../lib/juicy';
-import GameScreen from './game_screen';
 
 export default class LoadingScreen extends State {
     ambient = new THREE.AmbientLight(0xffffff, 0.5);
     directional = new THREE.DirectionalLight(0xffffff, 0.5);
 
     objects: { [key: string]: any } = {};
+    box: THREE.Object3D;
 
     constructor() {
         super();
@@ -19,38 +16,27 @@ export default class LoadingScreen extends State {
         // Lights
         this.scene.add(this.ambient);
         this.scene.add(this.directional);
+        // this.orthographic(1);
+        this.lookAt(new THREE.Vector3(5, 5, 5), new THREE.Vector3(0));
 
-        this.load("road");
-        this.load("truck1");
-        this.load("car1");
-        this.load("container1");
-        this.load("o deer");
+        let g = new THREE.BoxGeometry(1, 1, 1);
+        let m = new THREE.MeshPhongMaterial({ color: 0xffffff });
+        this.box = new THREE.Mesh(g, m);
+        this.scene.add(this.box);
     }
 
     load(name: string) {
         this.objects[name] = null;
-        new MTLLoader().load(`models/${name}.mtl`, mtl => {
-            const objLoader = new OBJLoader();
-            objLoader.addMaterials(MtlObjBridge.addMaterialsFromMtlLoader(mtl));
-            objLoader.load(`models/${name}.obj`, obj => {
-                this.objects[name] = obj;
-                this.checkLoaded();
-            });
-        });
     }
 
     init() {
         this.checkLoaded();
     }
 
-    checkLoaded() {
-        for (let name in this.objects) {
-            if (this.objects[name] === null) {
-                return;
-            }
-        }
+    update(dt: number) {
+        this.box.rotateY(dt);
+    }
 
-        // All done! Load the game.
-        this.game.setState(new GameScreen(this.objects));
+    checkLoaded() {
     }
 };
