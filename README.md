@@ -1,7 +1,3 @@
-# GBJam 9
-
-It's hot game ~~summer~~ autumn
-
 # Getting started
 
 1. Download this repository
