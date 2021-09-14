@@ -1,18 +1,29 @@
 var Sounds: { [key: string]: MultiSampleSound } = {};
 
+type SoundProperties = {
+    src: string;
+    loop?: boolean;
+    samples?: number;
+    volume?: number;
+}
+
 class MultiSampleSound {
     elements: HTMLAudioElement[] = [];
     volume: number = 1;
     index: number = 0;
 
-    constructor(src: string, loop: boolean, samples: number, volume: number) {
-        for (var i = 0; i < samples; i++) {
+    constructor(props: SoundProperties) {
+        if (!props.samples) {
+            props.samples = 1;
+        }
+
+        for (var i = 0; i < props.samples; i++) {
             var sound = document.createElement('audio');
-            sound.volume = volume || 1;
-            sound.loop = loop;
+            sound.volume = props.volume || 1;
+            sound.loop = !!props.loop;
 
             var source = document.createElement("source");
-            source.src = src;
+            source.src = props.src;
             sound.appendChild(source);
             sound.load();
             this.elements.push(sound);
@@ -64,6 +75,6 @@ export function Pause(name: string) {
     Sounds[name].pause();
 }
 
-export function Load(name: string, src: string, loop?: boolean, samples?: number, volume?: number) {
-    Sounds[name] = new MultiSampleSound(src, !!loop, samples || 1, volume || 1);
+export function Load(name: string, properties: SoundProperties) {
+    Sounds[name] = new MultiSampleSound(properties);
 }

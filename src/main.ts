@@ -1,21 +1,41 @@
-import { Game, THREE } from '../lib/juicy';
-import Keys from './helpers/keys';
-import LoadingScreen from './states/load_screen';
+import { Game, Sound } from '../lib/juicy';
+import LoadingScreen from './states/loading';
 
-const GAME_WIDTH = 1280;
-const GAME_HEIGHT = 720;
+const keys = {
+    LEFT: 37,
+    UP: 38,
+    RIGHT: 39,
+    DOWN: 40,
+    SPACE: 32,
 
-let renderer = new THREE.WebGLRenderer();
-renderer.setSize(GAME_WIDTH, GAME_HEIGHT);
-document.body.appendChild(renderer.domElement);
-
-Game.init(renderer, GAME_WIDTH, GAME_HEIGHT, Keys);
-
-// On window resize, fill it with the game again!
-window.onresize = function () {
-    Game.resize();
+    A: 65,
+    D: 68,
+    S: 83,
+    W: 87,
 };
+
+Game.init({
+    canvas: 'game-canvas',
+    keys,   
+    width: 160,
+    height: 144,
+    scale: 5,
+});
+
+// Document events
+document.addEventListener('mousewheel', Game.trigger.bind(Game, 'mousewheel'));
+
+window.onresize = () => Game.resize();
+
+// Music
+Sound.Load('FubSong', {
+    src: './audio/FubSong.mp3',
+    loop: true,
+    volume: 0.01
+});
+
+// Sound.Play('FubSong');
 
 Game.setState(new LoadingScreen()).run();
 
-Game.setDebug(document.getElementById("fps")!);
+// Game.setDebug(document.getElementById("fps")!);

@@ -1,7 +1,7 @@
 /* -------------------- Animation frames ----------------- */
 window.requestAnimationFrame = (function () {
     return window.requestAnimationFrame ||
-        window.webkitRequestAnimationFrame ||
+        (window as any).webkitRequestAnimationFrame ||
         (window as any).mozRequestAnimationFrame ||
         (window as any).oRequestAnimationFrame ||
         (window as any).msRequestAnimationFrame ||
@@ -10,68 +10,105 @@ window.requestAnimationFrame = (function () {
         };
 })();
 
-import * as THREE_ from './three.js';
-export * as THREE from './three.js';
-
-// import * as Box2D_ from './box2d.js';
-// export * as Box2D from './box2d.js';
-
 import * as Box2D_ from './Box2D.js';
 export * as Box2D from './Box2D.js';
 
 /* Passthrough exports */
+import { Point } from './juicy.point';
+export * from './juicy.point';
 export * as Sound from './juicy.sound';
+
+const PIXEL_RATIO = window.devicePixelRatio;
+
+function SetCanvasSize(canvas: HTMLCanvasElement, width: number, height: number) {
+    canvas.width = width * PIXEL_RATIO;
+    canvas.height = height * PIXEL_RATIO;
+    canvas.getContext('2d')?.scale(PIXEL_RATIO, PIXEL_RATIO);
+}
 
 interface KeyNameToCodeMap {
     [key: string]: number
 };
 
+interface GameSettings {
+    canvas: HTMLCanvasElement | string;
+    keys: KeyNameToCodeMap;
+    width: number;
+    height: number;
+    scale?: number;
+}
+
 class Game {
-    #running: boolean = false;
-    #state: State = new State();
-    #lastTime: number = 0;
+    private scale = new Point(1);
+    mouse = new Point();
+    private running: boolean = false;
+    private state!: State;
+    private lastTime: number = 0;
 
-    #canvas: HTMLCanvasElement | undefined;
-    #renderer: THREE_.Renderer | undefined;
+    private canvas?: HTMLCanvasElement;
+    private context: CanvasRenderingContext2D | null = null;
 
-    width: number = 0;
-    height: number = 0;
-    #scale = new THREE_.Vector2(1);
+    size = new Point();
 
-    #KEYS: KeyNameToCodeMap = {};
-    #CODES: { [key: number]: string } = {};
+    private KEYS: KeyNameToCodeMap = {};
+    private CODES: { [key: number]: string } = {};
 
-    #keyState: { [key: number]: boolean } = {};
-    #listener: { [key: string]: EventListener } = {};
+    private keyState: { [key: number]: boolean } = {};
+    private listener: { [key: string]: EventListener } = {};
 
-    #debug?: HTMLElement;
-    #fps: number = 0;
-    #fpsAlpha: number = 0.95;
+    private debug?: HTMLElement;
+    private fps: number = 0;
+    private fpsAlpha: number = 0.95;
 
-    init(renderer: THREE_.Renderer, width: number, height: number, keys: KeyNameToCodeMap) {
-        this.width = width;
-        this.height = height;
+    init(settings: GameSettings) {
+        const {
+            canvas,
+            keys,
+            width,
+            height,
+            scale,
+        } = settings;
 
-        this.setRenderer(renderer);
+        this.size = new Point(width, height);
+        this.scale = new Point(scale || 1);
+        this.state = new State();
+
+        let canv: HTMLCanvasElement;
+        if (canvas instanceof HTMLCanvasElement) {
+            canv = canvas;
+        }
+        else {
+            const element = document.getElementById(canvas);
+            if (element instanceof HTMLCanvasElement) {
+                canv = element;
+            }
+            else {
+                throw Error(`Canvas element with id ${canvas} not found.`);
+            }
+        }
+
+        this.setCanvas(canv);
 
         // Input stuff
-        this.#KEYS = keys || {};
-        this.#CODES = {};
-        for (let key in keys) {
-            this.#CODES[keys[key]] = key;
+        this.KEYS = keys || {};
+        this.CODES = {};
+        for (const key in keys) {
+            this.CODES[keys[key]] = key;
         }
 
         // document hooks
         document.onkeydown = (evt) => {
-            this.#keyState[evt.keyCode] = true;
+            this.keyState[evt.keyCode] = true;
         };
         document.onkeyup = (evt) => {
-            this.#keyState[evt.keyCode] = false;
+            this.keyState[evt.keyCode] = false;
 
-            let method = 'key_' + this.#CODES[evt.keyCode];
-            let state = this.#state as any;
+            this.trigger('keypress', evt);
+
+            const method = 'key_' + this.CODES[evt.keyCode];
+            const state = this.state as any;
             if (state && state[method]) {
-                state[method](this.#CODES[evt.keyCode]);
+                state[method](this.CODES[evt.keyCode]);
             }
         };
 
@@ -79,72 +116,101 @@ class Game {
     }
 
     clear() {
-        for (let action in this.#listener) {
-            document.removeEventListener(action, this.#listener[action]);
+        for (const action in this.listener) {
+            document.removeEventListener(action, this.listener[action]);
         }
-        this.#listener = {};
+        this.listener = {};
     }
 
     setDebug(debug?: HTMLElement) {
-        this.#debug = debug;
+        this.debug = debug;
+        return this; // Enable chaining
     }
 
-    setRenderer(renderer: THREE_.Renderer) {
-        this.#renderer = renderer;
-        this.#canvas = renderer.domElement;
+    setCanvas(canvas: HTMLCanvasElement) {
+        this.canvas = canvas;
+        this.context = canvas.getContext('2d');
+        
+        canvas.style.width = `${this.scale.x * this.size.x}px`;
+        canvas.style.height = `${this.scale.y * this.size.y}px`;
+        SetCanvasSize(this.canvas, this.size.x, this.size.y);
 
         let startDrag: MouseEvent | undefined;
-        this.#canvas.onmousedown = (evt) => {
-            startDrag = evt;
-            this.trigger('dragstart', evt);
+        let dragging = false;
+        canvas.onmousedown = (evt: MouseEvent) => {
+            this.triggerAtPos('mousedown', evt);
+            if (!startDrag) {
+                startDrag = evt;
+            }
         };
-        this.#canvas.onmouseup = (evt) => {
+        canvas.onmouseup = (evt: MouseEvent) => {
+            this.triggerAtPos('mouseup', evt);
             if (!startDrag) {
                 return;
             }
 
-            let startPos = this.getCanvasCoords(startDrag);
-            let endPos = this.getCanvasCoords(evt);
-
-            if (startPos.sub(endPos).length() <= 2) {
-                this.trigger('click', evt);
+            if (!dragging) {
+                this.triggerAtPos('click', evt);
             }
             else {
-                this.trigger('dragend', evt);
+                this.triggerAtPos('dragend', evt);
             }
 
             startDrag = undefined;
+            dragging = false;
         };
-        this.#canvas.onmousemove = (evt) => {
-            if (startDrag) {
-                this.trigger('drag', evt);
+        canvas.onmousemove = (evt: MouseEvent) => {
+            this.triggerAtPos('mousemove', evt);
+            this.mouse = this.getCanvasCoords(evt);
+
+            if (dragging) {
+                this.triggerAtPos('drag', evt);
+            }
+            else if (startDrag) {
+                var startPos = this.getCanvasCoords(startDrag);
+                var endPos   = this.getCanvasCoords(evt);
+                if (startPos.sub(endPos).length() >= 5) {
+                    this.triggerAtPos('dragstart', startDrag);
+                    dragging = true;
+                }
             }
         }
 
         this.resize();
         return this; // Enable chaining
     }
-
-    resize() {
-        if (!this.#canvas) {
+    
+    getCanvasCoords(evt: MouseEvent) {
+        if (!this.canvas) {
             throw Error('Game was not properly initialized - canvas is unavailable');
         }
 
-        let parent = this.#canvas.parentElement;
-        let width = parent ? parent.clientWidth : this.#canvas.clientWidth;
-        let height = parent ? parent.clientHeight : this.#canvas.clientHeight;
+        const canvasRect = this.canvas.getBoundingClientRect();
+        const mx = evt.clientX - canvasRect.left;
+        const my = evt.clientY - canvasRect.top;
 
-        this.#canvas.width = width;
-        this.#canvas.height = width * this.height / this.width;
-        if (this.#canvas.height > height) {
-            this.#canvas.height = height;
-            this.#canvas.width = height * this.width / this.height;
+        return new Point(mx, my);
+    }
+
+    resize() {
+        if (!this.canvas) {
+            throw Error('Game was not properly initialized - canvas is unavailable');
         }
-        this.#scale = new THREE_.Vector2(this.#canvas.width / this.width, this.#canvas.height / this.height);
+
+        // const parent = this.canvas.parentElement;
+        // const width = parent ? parent.clientWidth : this.canvas.clientWidth;
+        // const height = parent ? parent.clientHeight : this.canvas.clientHeight;
+
+        // this.canvas.width = width;
+        // this.canvas.height = width * this.height / this.width;
+        // if (this.canvas.height > height) {
+        //     this.canvas.height = height;
+        //     this.canvas.width = height * this.width / this.height;
+        // }
 
         // Make sure we re-render
-        if (this.#state) {
-            this.#state.hasRendered = false;
+        if (this.state) {
+            this.state.hasRendered = false;
         }
 
         return this; // Enable chaining
@@ -152,7 +218,7 @@ class Game {
 
     keyDown(key: string | string[]) {
         if (typeof (key) === 'string') {
-            return this.#keyState[this.#KEYS[key]];
+            return this.keyState[this.KEYS[key]];
         }
         else {
             for (let k = 0; k < key.length; k++) {
@@ -164,11 +230,15 @@ class Game {
         }
     }
 
-    trigger(evt: string, pos: MouseEvent) {
-        let state = this.#state as any;
+    trigger(evt: string, data: any) {
+        const state = this.state as any;
         if (state && state[evt]) {
-            state[evt](this.getCanvasCoords(pos));
+            state[evt](data);
         }
+    }
+
+    triggerAtPos(evt: string, pos: MouseEvent) {
+        this.trigger(evt, this.getCanvasCoords(pos));
     }
 
     on(action: string, keys: string | string[], callback?: EventListener) {
@@ -178,77 +248,67 @@ class Game {
             }
 
             for (let i = 0; i < keys.length; i++) {
-                let key = keys[i];
+                const key = keys[i];
 
-                (this.#state as any)['key_' + key] = callback;
+                (this.state as any)['key_' + key] = callback;
             }
         }
         else {
             callback = keys as any as EventListener;
-            if (this.#listener[action]) {
-                document.removeEventListener(action, this.#listener[action]);
+            if (this.listener[action]) {
+                document.removeEventListener(action, this.listener[action]);
             }
 
-            this.#listener[action] = callback;
-            document.addEventListener(action, this.#listener[action]);
+            this.listener[action] = callback;
+            document.addEventListener(action, this.listener[action]);
         }
 
         return this; // Enable chaining
     };
 
-    getCanvasCoords(evt: MouseEvent) {
-        if (!this.#canvas) {
-            throw Error('Game was not properly initialized - canvas is unavailable');
-        }
-
-        let canvasRect = this.#canvas.getBoundingClientRect();
-        let mx = evt.clientX - canvasRect.left;
-        let my = evt.clientY - canvasRect.top;
-
-        return new THREE_.Vector2(mx / this.#canvas.width * 2 - 1, 1 - my / this.#canvas.height * 2);
-    }
-
     setState(state: State) {
         this.clear();
 
-        this.#state = state;
-        this.#state.game = this;
-        this.#state.init();
-        this.#state.hasRendered = false;
+        this.state = state;
+        this.state.game = this;
+        this.state.init();
+        this.state.hasRendered = false;
 
         return this; // Enable chaining
     }
 
+    private updateFn = () => this.update();
+
     update() {
-        if (!this.#running) {
+        if (!this.running) {
             return;
         }
 
-        requestAnimationFrame(() => this.update());
-        let nextTime = new Date().getTime();
+        requestAnimationFrame(this.updateFn);
+        const nextTime = new Date().getTime();
 
-        if (this.#debug && nextTime !== this.#lastTime) {
-            var fps = 1000 / (nextTime - this.#lastTime);
-            this.#fps = this.#fpsAlpha * this.#fps + (1 - this.#fpsAlpha) * fps;
+        if (this.debug && nextTime !== this.lastTime) {
+            var fps = 1000 / (nextTime - this.lastTime);
+            this.fps = this.fpsAlpha * this.fps + (1 - this.fpsAlpha) * fps;
 
-            this.#debug.innerHTML = 'FPS: ' + Math.floor(this.#fps);
+            this.debug.innerHTML = 'FPS: ' + Math.floor(this.fps);
         }
 
-        let dt = (nextTime - this.#lastTime) / 1000;
+        const dt = (nextTime - this.lastTime) / 1000;
         if (dt > 0.2) {
-            this.#lastTime = nextTime;
+            this.lastTime = nextTime;
             return;
         }
 
         try {
-            let updated = !this.#state.update(dt) || this.#state.updated;
-            this.#state.updated = false;
+            const updated = !this.state.update(dt) || this.state.updated;
+            this.state.updated = false;
 
-            this.#lastTime = nextTime;
+            this.lastTime = nextTime;
 
-            if (updated || !this.#state.hasRendered) {
+            if (updated || !this.state.hasRendered) {
                 this.render();
-                this.#state.hasRendered = true;
+                this.state.hasRendered = true;
             }
         }
         catch (e) {
@@ -258,14 +318,27 @@ class Game {
     }
 
     render() {
-        this.#state.render(this.#renderer!);
+        if (!this.context || !this.canvas) {
+            this.running = false;
+            throw Error('Game was not properly initialized - canvas is unavailable');
+        }
+
+        this.context.save();
+  
+        if (!this.state.stopClear) {
+           this.context.clearRect(0, 0, this.size.x, this.size.y);
+        }
+  
+        this.state.render(this.context, this.canvas.width, this.canvas.height);
+  
+        this.context.restore();
 
         return this; // Enable chaining
     }
 
     run() {
-        this.#running = true;
-        this.#lastTime = new Date().getTime();
+        this.running = true;
+        this.lastTime = new Date().getTime();
 
         this.update();
 
@@ -273,12 +346,19 @@ class Game {
     };
 
     pause() {
-        this.#running = false;
+        this.running = false;
     }
 }
 
+// Game singleton
 let game: Game;
-
+if ((window as any).__juicy__game) {
+    game = (window as any).__juicy__game as Game;
+}
+else {
+    game = (window as any).__juicy__game = new Game();
+}
+export { game as Game };
 
 /* -------------------- Game State_ ----------------------- */
 /*
@@ -300,15 +380,7 @@ export class State {
     game: Game = game;
     entities: Entity[] = [];
 
-    protected scene = new THREE_.Scene();
-    protected camera: THREE_.Camera = new THREE_.PerspectiveCamera(45, 1, 0.1, 5000);
-
-    protected world = new Box2D_.Dynamics.World(new Box2D_.Common.Math.Vec2());
-
-    init() {
-        this.perspective();
-        this.lookAt(new THREE_.Vector3(0, 0, -10), new THREE_.Vector3(0, 0, 0));
-    }
+    init() {}
 
     update(dt: number): boolean | void {
         this.entities.forEach(e => {
@@ -318,44 +390,48 @@ export class State {
         return false;
     }
 
-    render(renderer: THREE_.Renderer) {
-        if (this.camera) {
-            renderer.render(this.scene, this.camera!);
-        }
-    }
-
-    perspective(fov?: number, near?: number, far?: number) {
-        fov = fov || 45;
-        near = near || 0.1;
-        far = far || 1000;
-        this.camera = new THREE_.PerspectiveCamera(fov, this.game.width / this.game.height, near, far);
-    }
-
-    orthographic(scale?: number, near?: number, far?: number) {
-        scale = scale || 1;
-        near = near || -500;
-        far = far || 1000;
-        this.camera = new THREE_.OrthographicCamera(
-            -this.game.width / scale,
-            this.game.width / scale,
-            this.game.height / scale,
-            -this.game.height / scale,
-            near,
-            far
-        );
-
-    }
-
-    lookAt(position: THREE_.Vector3, lookAt: THREE_.Vector3) {
-        this.camera!.position.copy(position);
-        this.camera!.lookAt(lookAt);;
+    render(context: CanvasRenderingContext2D, width: number, height: number) {
+        this.entities.forEach(e => {
+            e.render(context);
+        });
     }
 
     add(e: Entity) {
         this.entities.push(e);
     }
 
-    click(pos: THREE.Vector2) {
+    get(name: string): Entity | undefined {
+        const matches = this.entities.filter(e => e.name === name);
+        if (matches.length) {
+            return matches[0];
+        }
+    }
+
+    remove(nameOrEntity: Entity | string) {
+        if (typeof(nameOrEntity) === 'string') {
+            this.entities = this.entities.filter(e => e.name !== nameOrEntity);
+        }
+        else {
+            this.entities = this.entities.filter(e => e !== nameOrEntity);
+        }
+    }
+
+    mousedown(pos: Point) {
+        this.entities.forEach(e => {
+            if (e.contains(pos)) {
+                e.active = true;
+                e.mousedown(pos);
+            }
+        });
+    }
+
+    mouseup(pos: Point) {
+        this.entities.forEach(e => {
+            if (e.contains(pos)) {
+                e.mouseup(pos);
+            }
+            e.active = false;
+        });
     }
 };
 
@@ -367,58 +443,121 @@ export class State {
  *  [Constructor]
  *    addComponent (c[, name]) - Add a component to the entity
  *  [Useful]
- *    getComponent (c) - Get an (updated) component.
+ *    get (c) - Get an (updated) component.
  *    update (dt, c)   - Calls update on all components, or just c
  *    render (context) - Calls render on all components
  */
 export type RenderArgs = [CanvasRenderingContext2D, number, number, number, number];
 
-export class Entity extends THREE_.Object3D {
+export class Entity {
     state: State;
 
-    props: { [key: string]: any };
+    props: { [key: string]: any } = {};
     visible: boolean = true;
+    name?: string;
+
+    position: Point = new Point();
+    scale: Point = new Point(1);
     width: number = 0;
     height: number = 0;
+    active: boolean = false;
 
     components: Component[] = [];
     updated: boolean[] = [];
 
-    constructor(state: State, components?: (new () => Component)[]) {
-        super();
+    parent?: Entity;
+    children: Entity[] = [];
 
-        this.props = {};
-        this.children = [];
+    constructor(state: State, name?: string, components?: (Component | (new () => Component))[]) {
+        if (typeof(name) !== 'string') {
+            components = name;
+            name = undefined;
+        }
 
+        this.name = name;
+        this.state = state;
+        
         components = (components || []).concat(this.initialComponents());
         components.forEach(c => this.addComponent(c));
-
-        this.state = state;
         state.add(this);
 
         this.init();
     }
 
-    init() {
-
-    }
+    init() {}
 
     initialComponents(): (new () => Component)[] {
         return [];
     }
 
+    globalPosition(): Point {
+        const position = this.position.copy();
+        if (this.parent) {
+            return position.mult(this.parent.globalScale()).add(this.parent.globalPosition());
+        }
+        return position;
+    }
+
+    globalScale(): Point {
+        const scale = this.scale.copy();
+        if (this.parent) {
+            return scale.mult(this.parent.globalScale());
+        }
+        return scale;
+    }
+
+    contains(point: Point) {
+        point = point.copy().sub(this.globalPosition());
+        return point.x >= 0 &&
+               point.y >= 0 &&
+               point.x <= this.width &&
+               point.y <= this.height;
+    }
+
+    distance(other: Entity | Point) {
+        if (other instanceof Entity) {
+            other = other.globalPosition();
+        }
+
+        return this.globalPosition().sub(other).length();
+    }
+
+    collidesWith(other: Entity) {
+        // TODO account for parent entities
+        const otherBottomRight = other.position.add(new Point(other.width, other.height));
+        const bottomRight      = this .position.add(new Point(this .width, this .height));
+  
+        return otherBottomRight.x >= this.position.x &&
+               otherBottomRight.y >= this.position.y &&
+               other.position.x   <= bottomRight.x   &&
+               other.position.y   <= bottomRight.y;
+    }
+
     addComponent(c: Component | (new () => Component)) {
         if (typeof (c) === 'function') {
             c = new c();
-            c.entity = this;
             c.init(this);
         }
 
+        if (c.entity) {
+            c.entity.remove(c);
+        }
+
+        c.entity = this;
         this.components.push(c);
         this.updated.push(false);
+        return c;
     }
 
-    getComponent<C extends Component>(constructor: (new () => C)): C | undefined {
+    add<C extends Component>(constructor: (new () => C)): C {
+        return this.addComponent(constructor) as C;
+    }
+
+    remove(component: Component) {
+        this.components = this.components.filter(c => c !== component);
+    }
+
+    get<C extends Component>(constructor: (new () => C)): C | undefined {
         for (let i = 0; i < this.components.length; i++) {
             if ((this.components[i] as any).__proto__.constructor.name === constructor.name) {
                 return this.components[i] as C;
@@ -429,6 +568,14 @@ export class Entity extends THREE_.Object3D {
     addChild(child: Entity) {
         child.parent = this;
         this.children.push(child);
+    }
+
+    mousedown(pos: Point) {
+        this.components.forEach(c => c.mousedown(pos));
+    }
+
+    mouseup(pos: Point) {
+        this.components.forEach(c => c.mouseup(pos));
     }
 
     update<C extends Component>(dt: number, constructor?: (new () => C)) {
@@ -453,6 +600,31 @@ export class Entity extends THREE_.Object3D {
             }
         }
     }
+
+    render(context: CanvasRenderingContext2D) {
+        context.save();
+        context.translate(this.position.x, this.position.y);
+        context.scale(this.scale.x, this.scale.y);
+
+        let renderArgs: RenderArgs;
+        if (arguments.length === 1) {
+            renderArgs = [context, 0, 0, this.width, this.height];
+        }
+        else if (arguments.length === 3) {
+            renderArgs = Array.prototype.slice.call(arguments) as RenderArgs;
+            renderArgs.push(this.width, this.height);
+        }
+        else if (arguments.length === 5) {
+            renderArgs = Array.prototype.slice.call(arguments) as RenderArgs;
+        }
+        else {
+            throw Error(`${arguments.length} arguments passed to Entity.render, when only 1 or 5 are supported`);
+        }
+
+        this.components.forEach(c => c.render.apply(c, renderArgs));
+        this.children.forEach(child => child.render(context));
+        context.restore();
+    }
 }
 
 /* -------------------- Game Component -------------------- */
@@ -471,21 +643,25 @@ export class Component {
     entity!: Entity;
 
     init(e: Entity) { }
+    mousedown(pos: Point) {}
+    mouseup(pos: Point) {}
     update(dt: number, game: Game) { }
     render(context: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) { }
 }
 
+export type Color = string | CanvasGradient | CanvasPattern;
+
 /* -------------------- Typical Components --------------- */
 export class ImageComponent extends Component {
-    #tint: string | CanvasGradient | CanvasPattern | undefined;
+    private tint?: Color;
     opacity: number = 1;
     image: HTMLImageElement = new Image();
 
-    width: number | undefined;
-    height: number | undefined;
+    width?: number;
+    height?: number;
 
-    onload: ((img: ImageComponent) => void) | undefined;
-    #canvas: HTMLCanvasElement | undefined;
+    onload?: ((img: ImageComponent) => void);
+    canvas?: HTMLCanvasElement;
 
     init(entity: Entity) {
         this.opacity = 1;
@@ -496,8 +672,8 @@ export class ImageComponent extends Component {
                 entity.height = this.image.height;
             }
 
-            if (this.#tint) {
-                this.setTint(this.#tint);
+            if (this.tint) {
+                this.setTint(this.tint);
             }
 
             if (this.onload) {
@@ -511,23 +687,22 @@ export class ImageComponent extends Component {
         }
     }
 
-    setTint(tint: string | CanvasGradient | CanvasPattern) {
+    setTint(tint: Color) {
         // TODO glean alpha of tint
-        this.#tint = tint;
+        this.tint = tint;
 
         if (this.image.complete) {
             // Apply tint
-            this.#canvas = this.#canvas || document.createElement('canvas');
-            this.#canvas.width = this.image.width;
-            this.#canvas.height = this.image.height;
+            this.canvas = this.canvas || document.createElement('canvas');
+            SetCanvasSize(this.canvas, this.image.width, this.image.height);
 
-            let context = this.#canvas.getContext('2d');
+            const context = this.canvas.getContext('2d');
             if (!context) {
                 throw Error('Failed getting image context');
             }
 
-            context.fillStyle = this.#tint;
-            context.fillRect(0, 0, this.#canvas.width, this.#canvas.height);
+            context.fillStyle = this.tint;
+            context.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
             // destination atop makes a result with an alpha channel identical to fg,
             // but with all pixels retaining their original color *as far as I can tell*
@@ -547,13 +722,13 @@ export class ImageComponent extends Component {
     }
 
     render(context: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
-        let originalAlpha = context.globalAlpha;
+        const originalAlpha = context.globalAlpha;
 
         context.globalAlpha = this.opacity;
         context.drawImage(this.image, x, y, w, h);
 
-        if (this.#tint && this.#canvas) {
-            context.drawImage(this.#canvas, x, y, w, h);
+        if (this.tint && this.canvas) {
+            context.drawImage(this.canvas, x, y, w, h);
         }
 
         // Restore original global alpha
@@ -562,9 +737,9 @@ export class ImageComponent extends Component {
 }
 
 export class BoxComponent extends Component {
-    fillStyle: string | CanvasGradient | CanvasPattern = 'white';
+    fillStyle: Color = 'white';
 
-    setFillStyle(style: string | CanvasGradient | CanvasPattern) {
+    setFillStyle(style: Color) {
         this.fillStyle = style;
     }
 
@@ -576,59 +751,94 @@ export class BoxComponent extends Component {
 
 export interface TextInfo {
     font: string;
+    size: number;
     text: string;
-    fillStyle: string | CanvasGradient | CanvasPattern;
+    fillStyle: Color;
+    padding: Point;
 }
 
 export class TextComponent extends Component {
-    #canvas: HTMLCanvasElement;
-    #context: CanvasRenderingContext2D;
+    canvas: HTMLCanvasElement;
+    context: CanvasRenderingContext2D;
 
     textInfo: TextInfo = {
-        font: '32px Arial',
+        font: 'Arial',
+        size: 32,
         text: '',
         fillStyle: 'white',
+        padding: new Point()
     };
     opacity: number = 1;
+    ready: boolean = false;
 
     constructor() {
         super();
 
-        this.#canvas = document.createElement('canvas');
-        this.#context = this.#canvas.getContext('2d') as CanvasRenderingContext2D;
+        this.canvas = document.createElement('canvas');
+        this.context = this.canvas.getContext('2d') as CanvasRenderingContext2D;
     }
 
-    set(config: Partial<TextInfo>) {
-        let entity = this.entity;
-        let context = this.#context;
-        let canvas = this.#canvas;
+    set(config: Partial<TextInfo>): Promise<void> {
+        const entity = this.entity;
+        if (!entity) {
+            throw Error('Setting text info before an entity is assign');
+        }
 
         // Set attributes
         Object.assign(this.textInfo, config);
 
+        const font = this.getFont();
+        const fonts = (document as any).fonts;
+        if (fonts && !fonts.check(font)) {
+            return fonts.load(font).then(() => {
+                this.renderOffscreen();
+                this.ready = true;
+            });
+        }
+        else {
+            this.renderOffscreen();
+            this.ready = true;
+            return Promise.resolve();
+        }
+    }
+
+    getFont() {
+        return `${this.textInfo.size}px ${this.textInfo.font}`;
+    }
+
+    measure() {
+        this.context.font = this.getFont();
+        const size = this.context.measureText(this.textInfo.text);
+        return new Point(Math.ceil(size.width), Math.ceil(this.textInfo.size + 2));
+    }
+
+    renderOffscreen() {
         // Measure the text size
-        context.font = this.textInfo.font;
-        context.fillStyle = this.textInfo.fillStyle;
-        let size = context.measureText(this.textInfo.text);
+        const entity = this.entity;
+        const context = this.context;
+        const canvas = this.canvas;
+        const size = this.measure();
+        const { fillStyle, text, padding } = this.textInfo;
 
         // Resize canvas
-        entity.width = canvas.width = Math.ceil(size.width);
-        entity.height = canvas.height = Math.ceil(parseInt(this.textInfo.font) * 5 / 3);
+        entity.width = size.x + padding.x * 2;
+        entity.height = size.y + padding.y * 2;
+        SetCanvasSize(canvas, entity.width, entity.height);
 
         // Draw text
         context.textBaseline = 'top';
-        context.font = this.textInfo.font;
-        context.fillStyle = this.textInfo.fillStyle;
-        context.fillText(this.textInfo.text, 0, 0);
+        context.font = this.getFont();
+        context.fillStyle = fillStyle;
+        context.fillText(text, padding.x, padding.y);
     }
 
     render(context: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
         // Save original alpha
-        let originalAlpha = context.globalAlpha;
+        const originalAlpha = context.globalAlpha;
         context.globalAlpha = this.opacity;
 
-        arguments[0] = this.#canvas;
-        context.drawImage(this.#canvas, x, y, w, h);
+        arguments[0] = this.canvas;
+        context.drawImage(this.canvas, x, y, w, h);
 
         context.globalAlpha = originalAlpha;
     }
@@ -661,6 +871,3 @@ export function rand(min: number, max: number) {
         return Math.floor(Math.random() * min);
     }
 };
-
-game = new Game();
-export { game as Game };

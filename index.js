@@ -53,8 +53,8 @@ const server = http
     });
   });
 
-  const wss = new WebSocket.Server({
-    server
-  });
+const wss = new WebSocket.Server({
+  port: 8081
+});
 
-  server.listen(8080);
+server.listen(8080);
